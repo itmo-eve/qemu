@@ -10,6 +10,9 @@
 
 #include "chardev/char-fe.h"
 #include "hw/virtio/virtio.h"
+#include "hw/pci/pci.h"
+#include "hw/block/block.h"
+
 
 typedef struct VhostUserHostNotifier {
     MemoryRegion mr;
@@ -23,7 +26,13 @@ typedef struct VhostUserState {
     int memory_slots;
 } VhostUserState;
 
+#include "hw/block/nvme.h"
+
 bool vhost_user_init(VhostUserState *user, CharBackend *chr, Error **errp);
 void vhost_user_cleanup(VhostUserState *user);
+
+int vhost_user_nvme_admin_cmd_raw(struct vhost_dev *dev, NvmeCmd *cmd,
+                                  void *buf, uint32_t len);
+
 
 #endif

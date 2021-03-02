@@ -25,6 +25,9 @@
 #include "migration/postcopy-ram.h"
 #include "trace.h"
 
+#include "hw/block/block.h"
+#include "include/block/nvme.h"
+
 #include <sys/ioctl.h>
 #include <sys/socket.h>
 #include <sys/un.h>
@@ -124,6 +127,9 @@ typedef enum VhostUserRequest {
     VHOST_USER_GET_MAX_MEM_SLOTS = 36,
     VHOST_USER_ADD_MEM_REG = 37,
     VHOST_USER_REM_MEM_REG = 38,
+    VHOST_USER_NVME_ADMIN = 80,
+    VHOST_USER_NVME_SET_CQ_CALL = 81,
+    VHOST_USER_NVME_START_STOP = 83,
     VHOST_USER_MAX
 } VhostUserRequest;
 
@@ -213,6 +219,13 @@ typedef union {
         VhostUserMemory memory;
         VhostUserMemRegMsg mem_reg;
         VhostUserLog log;
+        struct nvme {
+            union {
+                NvmeCmd req;
+                NvmeCqe cqe;
+            } cmd;
+            uint8_t buf[4096];
+        } nvme;
         struct vhost_iotlb_msg iotlb;
         VhostUserConfig config;
         VhostUserCryptoSession session;
@@ -2387,3 +2400,70 @@ const VhostOps user_ops = {
         .vhost_get_inflight_fd = vhost_user_get_inflight_fd,
         .vhost_set_inflight_fd = vhost_user_set_inflight_fd,
 };
+
+
+
+/* reply required for all the messages */
+int vhost_user_nvme_admin_cmd_raw(struct vhost_dev *dev, NvmeCmd *cmd,
+                                  void *buf, uint32_t len)
+{
+    VhostUserMsg msg = {
+        .hdr.request = VHOST_USER_NVME_ADMIN,
+        .hdr.flags = VHOST_USER_VERSION,
+    };
+    uint16_t status;
+
+    msg.hdr.size = sizeof(*cmd);
+    memcpy(&msg.payload.nvme.cmd.req, cmd, sizeof(*cmd));
+
+    if (vhost_user_write(dev, &msg, NULL, 0) < 0) {
+        return -1;
+    }
+
+    if (vhost_user_read(dev, &msg) < 0) {
+        return -1;
+    }
+
+    if (msg.hdr.request != VHOST_USER_NVME_ADMIN) {
+        error_report("Received unexpected msg type. Expected %d received %d",
+                     VHOST_USER_NVME_ADMIN, msg.hdr.request);
+        return -1;
+    }
+
+    switch (cmd->opcode) {
+    case NVME_ADM_CMD_DELETE_SQ :
+    case NVME_ADM_CMD_CREATE_SQ :
+    case NVME_ADM_CMD_DELETE_CQ :
+    case NVME_ADM_CMD_CREATE_CQ :
+    case NVME_ADM_CMD_SET_DB_MEMORY :
+    case NVME_ADM_CMD_GET_FEATURES :
+    case NVME_ADM_CMD_SET_FEATURES :
+        if (msg.hdr.size != sizeof(NvmeCqe)) {
+            error_report("Received unexpected rsp message. %u received %u",
+                         cmd->opcode, msg.hdr.size);
+        }
+        status = msg.payload.nvme.cmd.cqe.status;
+        if (nvme_cpl_is_error(status)) {
+            error_report("Nvme Admin Command Status Faild");
+            return -1;
+        }
+        memcpy(buf, &msg.payload.nvme.cmd.cqe, len);
+    break;
+    case NVME_ADM_CMD_IDENTIFY :
+        if (msg.hdr.size != sizeof(NvmeCqe) + 4096) {
+            error_report("Received unexpected rsp message. %u received %u",
+                         cmd->opcode, msg.hdr.size);
+        }
+        status = msg.payload.nvme.cmd.cqe.status;
+        if (nvme_cpl_is_error(status)) {
+            error_report("Nvme Admin Command Status Faild");
+            return -1;
+        }
+        memcpy(buf, &msg.payload.nvme.buf, len);
+    break;
+    default:
+        return -1;
+    }
+
+    return 0;
+}
