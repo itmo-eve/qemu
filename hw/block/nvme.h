@@ -3,11 +3,17 @@
 
 #include "block/nvme.h"
 #include "nvme-ns.h"
+#include "hw/virtio/vhost.h"
+#include "hw/virtio/vhost-user.h"
+#include "sysemu/hostmem.h"
+#include "chardev/char-fe.h"
+#include "hw/pci/pci.h"
 
 #define NVME_MAX_NAMESPACES 256
 
 typedef struct NvmeParams {
     char     *serial;
+    char     *vhostfd;
     uint32_t num_queues; /* deprecated since 5.1 */
     uint32_t max_ioqpairs;
     uint16_t msix_qsize;
@@ -35,6 +41,18 @@ typedef struct NvmeRequest {
     QEMUIOVector            iov;
     QTAILQ_ENTRY(NvmeRequest)entry;
 } NvmeRequest;
+
+typedef struct NvmeStatus {
+    uint16_t p:1;     /* phase tag */
+    uint16_t sc:8;    /* status code */
+    uint16_t sct:3;   /* status code type */
+    uint16_t rsvd2:2;
+    uint16_t m:1;     /* more */
+    uint16_t dnr:1;   /* do not retry */
+} NvmeStatus;
+
+#define nvme_cpl_is_error(status) \
+        (((status & 0x01fe) != 0) || ((status & 0x0e00) != 0))
 
 static inline const char *nvme_adm_opc_str(uint8_t opc)
 {
@@ -89,6 +107,10 @@ typedef struct NvmeCQueue {
     uint32_t    vector;
     uint32_t    size;
     uint64_t    dma_addr;
+
+    int32_t     virq;
+    EventNotifier guest_notifier;
+
     QEMUTimer   *timer;
     QTAILQ_HEAD(, NvmeSQueue) sq_list;
     QTAILQ_HEAD(, NvmeRequest) req_list;
@@ -104,6 +126,10 @@ typedef struct NvmeBus {
 #define TYPE_NVME "nvme"
 #define NVME(obj) \
         OBJECT_CHECK(NvmeCtrl, (obj), TYPE_NVME)
+
+#define TYPE_VHOST_NVME "vhost-kernel-nvme"
+#define NVME_VHOST(obj) \
+        OBJECT_CHECK(NvmeCtrl, (obj), TYPE_VHOST_NVME)
 
 typedef struct NvmeFeatureVal {
     struct {
@@ -122,6 +148,17 @@ typedef struct NvmeCtrl {
     NvmeParams   params;
     NvmeBus      bus;
     BlockConf    conf;
+
+    MemoryRegion      *shadow_mr;
+    volatile uint32_t *shadow_db;
+    HostMemoryBackend *barmem;
+    int32_t    bootindex;
+    CharBackend chardev;
+    VhostUserState vhost_user;
+    struct vhost_dev dev;
+    uint32_t    num_io_queues;
+    bool        dataplane_started;
+    bool        vector_poll_started;
 
     bool        qs_created;
     uint32_t    page_size;
