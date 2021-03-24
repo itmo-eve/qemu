@@ -34,7 +34,7 @@
 #include "qapi/visitor.h"
 #include "nvme.h"
 #include "nvme-ns.h"
-#include "hw/virtio/vhost_user_nvme.h"
+#include "hw/virtio/vhost-nvme.h"
 
 
 static int vhost_user_nvme_vector_unmask(PCIDevice *dev, unsigned vector,
