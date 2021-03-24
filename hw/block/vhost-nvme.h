@@ -1,5 +1,5 @@
-#ifndef HW_VHOST_USER_NVME_H
-#define HW_VHOST_USER_NVME_H
+#ifndef HW_VHOST_NVME_H
+#define HW_VHOST_NVME_H
 /*
  * vhost-user-nvme
  *

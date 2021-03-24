@@ -902,20 +902,27 @@ static void nvme_realize(PCIDevice *pci_dev, Error **errp)
     NvmeNamespace *ns;
     NvmeIdentify cmd;
     int ret, i;
+    int vhostfd = -1;
     uint8_t *pci_conf;
     uint64_t bar_cap;
 
-    if (!n->chardev.chr) {
-        error_setg(errp, "vhost-user-nvme: missing chardev");
-        return;
+    if (vs->conf.vhostfd) {
+        vhostfd = monitor_fd_param(monitor_cur(), vs->conf.vhostfd, errp);
+        if (vhostfd == -1) {
+            error_prepend(errp, "vhost-scsi: unable to parse vhostfd: ");
+            return;
+        }
+    } else {
+        vhostfd = open("/dev/vhost-nvme", O_RDWR);
+        if (vhostfd < 0) {
+            error_setg(errp, "vhost-scsi: open vhost char device failed: %s",
+                       strerror(errno));
+            return;
+        }
     }
 
-    if (!vhost_user_init(&n->vhost_user, &n->chardev, errp)) {
-        return;
-    }
-
-    if (vhost_dev_nvme_init(&n->dev, &n->vhost_user,
-                         VHOST_BACKEND_TYPE_USER, 0) < 0) {
+    if (vhost_dev_nvme_init(&n->dev, (void *)vhostfd,
+                            VHOST_BACKEND_TYPE_KERNEL, 0) < 0) {
         error_setg(errp, "vhost-user-nvme: vhost_dev_init failed");
         return;
     }
