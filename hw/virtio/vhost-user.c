@@ -130,9 +130,7 @@ typedef enum VhostUserRequest {
     VHOST_USER_REM_MEM_REG = 38,
     VHOST_USER_NVME_ADMIN = 80,
     VHOST_USER_NVME_SET_CQ_CALL = 81,
-    VHOST_USER_NVME_GET_CAP = 82,
     VHOST_USER_NVME_START_STOP = 83,
-    VHOST_USER_NVME_SET_BAR_MR = 85,
     VHOST_USER_MAX
 } VhostUserRequest;
 
@@ -2404,77 +2402,7 @@ const VhostOps user_ops = {
         .vhost_set_inflight_fd = vhost_user_set_inflight_fd,
 };
 
-int vhost_user_nvme_get_cap(struct vhost_dev *dev, uint64_t *cap)
-{
-    return vhost_user_get_u64(dev, VHOST_USER_NVME_GET_CAP, cap);
-}
 
-int vhost_dev_nvme_start(struct vhost_dev *dev, VirtIODevice *vdev)
-{
-    int r;
-
-    if (vdev != NULL) {
-        return -1;
-    }
-    r = dev->vhost_ops->vhost_set_mem_table(dev, dev->mem);
-    if (r < 0) {
-        error_report("SET MEMTABLE Failed");
-        return -1;
-    }
-
-    vhost_user_set_u64(dev, VHOST_USER_NVME_START_STOP, 1);
-
-    return 0;
-}
-
-int vhost_dev_nvme_stop(struct vhost_dev *dev)
-{
-    return vhost_user_set_u64(dev, VHOST_USER_NVME_START_STOP, 0);
-}
-
-int vhost_user_nvme_set_bar_mr(struct vhost_dev *dev, MemoryRegion *mr)
-{
-    int fds[1];
-    bool reply_supported = virtio_has_feature(dev->protocol_features,
-                                          VHOST_USER_PROTOCOL_F_REPLY_ACK);
-
-    VhostUserMsg msg = {
-        .hdr.request = VHOST_USER_NVME_SET_BAR_MR,
-        .hdr.flags = VHOST_USER_VERSION,
-    };
-
-    if (reply_supported) {
-        msg.hdr.flags |= VHOST_USER_NEED_REPLY_MASK;
-    }
-
-    msg.payload.memory.regions[0].userspace_addr = (uintptr_t)
-                                                 memory_region_get_ram_ptr(mr);
-    msg.payload.memory.regions[0].memory_size  = memory_region_size(mr);
-    msg.payload.memory.regions[0].guest_phys_addr =
-                                                 memory_region_get_ram_addr(mr);
-    msg.payload.memory.regions[0].mmap_offset = 0;
-
-    fds[0] = memory_region_get_fd(mr);
-    if (fds[0] < 0) {
-        error_report("error controller BAR memory region");
-        return -1;
-    }
-
-    msg.payload.memory.nregions = 1;
-    msg.hdr.size = sizeof(msg.payload.memory.nregions);
-    msg.hdr.size += sizeof(msg.payload.memory.padding);
-    msg.hdr.size += sizeof(VhostUserMemoryRegion);
-
-    if (vhost_user_write(dev, &msg, fds, 1) < 0) {
-        return -1;
-    }
-
-    if (reply_supported) {
-        return process_message_reply(dev, &msg);
-    }
-
-    return 0;
-}
 
 /* reply required for all the messages */
 int vhost_user_nvme_admin_cmd_raw(struct vhost_dev *dev, NvmeCmd *cmd,
@@ -2539,52 +2467,4 @@ int vhost_user_nvme_admin_cmd_raw(struct vhost_dev *dev, NvmeCmd *cmd,
     }
 
     return 0;
-}
-
-static int vhost_user_nvme_set_vring_call(struct vhost_dev *dev,
-                                     struct vhost_vring_file *file)
-{
-    return vhost_set_vring_file(dev, VHOST_USER_NVME_SET_CQ_CALL, file);
-}
-
-static int vhost_user_nvme_init(struct vhost_dev *dev, void *opaque)
-{
-    struct vhost_user *u;
-
-    assert(dev->vhost_ops->backend_type == VHOST_BACKEND_TYPE_USER);
-
-    u = g_new0(struct vhost_user, 1);
-    u->user = opaque;
-    u->slave_fd = -1;
-    u->dev = dev;
-    dev->opaque = u;
-
-    return 0;
-}
-
-static const VhostOps user_nvme_ops = {
-        .backend_type = VHOST_BACKEND_TYPE_USER,
-        .vhost_backend_init = vhost_user_nvme_init,
-        .vhost_backend_cleanup = vhost_user_backend_cleanup,
-        .vhost_backend_memslots_limit = vhost_user_memslots_limit,
-        .vhost_set_mem_table = vhost_user_set_mem_table,
-        .vhost_set_vring_call = vhost_user_nvme_set_vring_call,
-        .vhost_backend_can_merge = vhost_user_can_merge,
-};
-
-int vhost_dev_nvme_set_backend_type(struct vhost_dev *dev,
-                                    VhostBackendType backend_type)
-{
-    int r = 0;
-
-    switch (backend_type) {
-    case VHOST_BACKEND_TYPE_USER :
-        dev->vhost_ops = &user_nvme_ops;
-        break;
-    default:
-        error_report("Unknown vhost backend type");
-        r = -1;
-    }
-
-    return r;
 }

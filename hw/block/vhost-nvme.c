@@ -37,97 +37,50 @@
 #include "hw/virtio/vhost-nvme.h"
 
 
-static int vhost_user_nvme_vector_unmask(PCIDevice *dev, unsigned vector,
-                                         MSIMessage msg)
+#define VHOST_NVME_BAR_READ 0
+#define VHOST_NVME_BAR_WRITE 1
+
+
+static int vhost_dev_nvme_start(struct vhost_dev *hdev, VirtIODevice *vdev)
 {
-    NvmeCtrl *n = container_of(dev, NvmeCtrl, parent_obj);
-    NvmeCQueue *cq;
-    EventNotifier *e;
-    uint32_t qid;
-    int ret;
+    int r;
+       /* should only be called after backend is connected */
+    assert(hdev->vhost_ops);
 
-    for (qid = 1; qid <= n->num_io_queues; qid++) {
-        cq = n->cq[qid];
-        if (!cq) {
-            continue;
-        }
+    if (vdev != NULL) {
+        return -1;
+    }
+    r = hdev->vhost_ops->vhost_set_mem_table(hdev, dev->mem);
+    if (r < 0) {
+        error_report("SET MEMTABLE Failed");
+        return -1;
+    }
 
-        if (cq->vector == vector) {
-            e = &cq->guest_notifier;
-            ret = kvm_irqchip_update_msi_route(kvm_state, cq->virq, msg, dev);
-            if (ret < 0) {
-                error_report("msi irq update vector %u failed", vector);
-                return ret;
-            }
-            kvm_irqchip_commit_routes(kvm_state);
-            ret = kvm_irqchip_add_irqfd_notifier_gsi(kvm_state, e,
-                                                     NULL, cq->virq);
-            if (ret < 0) {
-                error_report("msi add irqfd gsi vector %u failed, ret %d",
-                             vector, ret);
-                return ret;
-            }
-            return 0;
+    //vhost_user_set_u64(dev, VHOST_USER_NVME_START_STOP, 1);
+    if (hdev->vhost_ops->vhost_dev_start) {
+        r = hdev->vhost_ops->vhost_dev_start(hdev, true);
+        if (r) {
+            goto fail_log;
         }
     }
 
     return 0;
 }
 
-static void vhost_user_nvme_vector_mask(PCIDevice *dev, unsigned vector)
+static int vhost_dev_nvme_stop(struct vhost_dev *hdev)
 {
-    NvmeCtrl *n = container_of(dev, NvmeCtrl, parent_obj);
-    NvmeCQueue *cq;
-    EventNotifier *e;
-    uint32_t qid;
-    int ret;
+    int i;
 
-    for (qid = 1; qid <= n->num_io_queues; qid++) {
-        cq = n->cq[qid];
-        if (!cq) {
-            continue;
-        }
+    /* should only be called after backend is connected */
+    assert(hdev->vhost_ops);
 
-        if (cq->vector == vector) {
-            e = &cq->guest_notifier;
-            ret = kvm_irqchip_remove_irqfd_notifier_gsi(kvm_state, e, cq->virq);
-            if (ret != 0) {
-                error_report("remove_irqfd_notifier_gsi failed");
-            }
-            return;
-        }
+    if (hdev->vhost_ops->vhost_dev_start) {
+        hdev->vhost_ops->vhost_dev_start(hdev, false);
     }
 
-    return;
-}
-
-static void vhost_user_nvme_vector_poll(PCIDevice *dev,
-                                        unsigned int vector_start,
-                                        unsigned int vector_end)
-{
-    NvmeCtrl *n = container_of(dev, NvmeCtrl, parent_obj);
-    NvmeCQueue *cq;
-    EventNotifier *e;
-    uint32_t qid, vector;
-
-    for (qid = 1; qid <= n->num_io_queues; qid++) {
-        cq = n->cq[qid];
-        if (!cq) {
-            continue;
-        }
-
-        vector = cq->vector;
-        if (vector < vector_end && vector >= vector_start) {
-            e = &cq->guest_notifier;
-            if (!msix_is_masked(dev, vector)) {
-                continue;
-            }
-
-            if (event_notifier_test_and_clear(e)) {
-                msix_set_pending(dev, vector);
-            }
-        }
-    }
+    hdev->started = false;
+    hdev->vdev = NULL;
+    return 0;
 }
 
 static bool nvme_nsid_valid(NvmeCtrl *n, uint32_t nsid)
@@ -171,24 +124,6 @@ static void vhost_user_nvme_remove_kvm_msi_virq(NvmeCQueue *cq)
     cq->virq = -1;
 }
 
-static int nvme_check_sqid(NvmeCtrl *n, uint16_t sqid)
-{
-    if (sqid < n->num_io_queues + 1) {
-        return 0;
-    }
-
-    return 1;
-}
-
-static int nvme_check_cqid(NvmeCtrl *n, uint16_t cqid)
-{
-    if (cqid < n->num_io_queues + 1) {
-        return 0;
-    }
-
-    return 1;
-}
-
 static void nvme_inc_cq_tail(NvmeCQueue *cq)
 {
     cq->tail++;
@@ -219,230 +154,8 @@ static void nvme_isr_notify(NvmeCtrl *n, NvmeCQueue *cq)
     }
 }
 
-static void nvme_free_sq(NvmeSQueue *sq, NvmeCtrl *n)
-{
-    if (sq->sqid) {
-        n->sq[sq->sqid] = NULL;
-        g_free(sq);
-    }
-}
 
-static uint16_t nvme_del_sq(NvmeCtrl *n, NvmeCmd *cmd)
-{
-    NvmeDeleteQ *c = (NvmeDeleteQ *)cmd;
-    NvmeSQueue *sq;
-    NvmeCqe cqe;
-    uint16_t qid = le16_to_cpu(c->qid);
-    int ret;
 
-    if (!qid || nvme_check_sqid(n, qid)) {
-        error_report("nvme_del_sq: invalid qid %u", qid);
-        return NVME_INVALID_QID | NVME_DNR;
-    }
-
-    sq = n->sq[qid];
-
-    ret = vhost_user_nvme_admin_cmd_raw(&n->dev, cmd, &cqe, sizeof(cqe));
-    if (ret < 0) {
-        error_report("nvme_del_sq: delete sq failed");
-        return -1;
-    }
-
-    nvme_free_sq(sq, n);
-    return NVME_SUCCESS;
-}
-
-static void nvme_init_sq(NvmeSQueue *sq, NvmeCtrl *n, uint64_t dma_addr,
-    uint16_t sqid, uint16_t cqid, uint16_t size)
-{
-    sq->ctrl = n;
-    sq->dma_addr = dma_addr;
-    sq->sqid = sqid;
-    sq->size = size;
-    sq->cqid = cqid;
-    sq->head = sq->tail = 0;
-
-    n->sq[sqid] = sq;
-}
-
-static uint16_t nvme_create_sq(NvmeCtrl *n, NvmeCmd *cmd)
-{
-    NvmeSQueue *sq;
-    int ret;
-    NvmeCqe cqe;
-    NvmeCreateSq *c = (NvmeCreateSq *)cmd;
-
-    uint16_t cqid = le16_to_cpu(c->cqid);
-    uint16_t sqid = le16_to_cpu(c->sqid);
-    uint16_t qsize = le16_to_cpu(c->qsize);
-    uint16_t qflags = le16_to_cpu(c->sq_flags);
-    uint64_t prp1 = le64_to_cpu(c->prp1);
-
-    if (!cqid) {
-        error_report("nvme_create_sq: invalid cqid %u", cqid);
-        return NVME_INVALID_CQID | NVME_DNR;
-    }
-    if (!sqid || nvme_check_sqid(n, sqid)) {
-        error_report("nvme_create_sq: invalid sqid");
-        return NVME_INVALID_QID | NVME_DNR;
-    }
-    if (!qsize || qsize > NVME_CAP_MQES(n->bar.cap)) {
-        error_report("nvme_create_sq: invalid qsize");
-        return NVME_MAX_QSIZE_EXCEEDED | NVME_DNR;
-    }
-    if (!prp1 || prp1 & (n->page_size - 1)) {
-        error_report("nvme_create_sq: invalid prp1");
-        return NVME_INVALID_FIELD | NVME_DNR;
-    }
-    if (!(NVME_SQ_FLAGS_PC(qflags))) {
-        error_report("nvme_create_sq: invalid flags");
-        return NVME_INVALID_FIELD | NVME_DNR;
-    }
-
-    /* BIOS also create IO queue pair for same queue ID */
-    if (n->sq[sqid] != NULL) {
-        nvme_free_sq(n->sq[sqid], n);
-    }
-
-    sq = g_malloc0(sizeof(*sq));
-    assert(sq != NULL);
-    nvme_init_sq(sq, n, prp1, sqid, cqid, qsize + 1);
-    ret = vhost_user_nvme_admin_cmd_raw(&n->dev, cmd, &cqe, sizeof(cqe));
-    if (ret < 0) {
-        error_report("nvme_create_sq: create sq failed");
-        return -1;
-    }
-    return NVME_SUCCESS;
-}
-
-static void nvme_free_cq(NvmeCQueue *cq, NvmeCtrl *n)
-{
-    msix_vector_unuse(&n->parent_obj, cq->vector);
-    if (cq->cqid) {
-        n->cq[cq->cqid] = NULL;
-        g_free(cq);
-    }
-}
-
-static uint16_t nvme_del_cq(NvmeCtrl *n, NvmeCmd *cmd)
-{
-    NvmeDeleteQ *c = (NvmeDeleteQ *)cmd;
-    NvmeCqe cqe;
-    NvmeCQueue *cq;
-    uint16_t qid = le16_to_cpu(c->qid);
-    int ret;
-
-    if (!qid || nvme_check_cqid(n, qid)) {
-        error_report("nvme_del_cq: invalid qid %u", qid);
-        return NVME_INVALID_CQID | NVME_DNR;
-    }
-
-    ret = vhost_user_nvme_admin_cmd_raw(&n->dev, cmd, &cqe, sizeof(cqe));
-    if (ret < 0) {
-        error_report("nvme_del_cq: delete cq failed");
-        return -1;
-    }
-
-    cq = n->cq[qid];
-
-    nvme_free_cq(cq, n);
-    return NVME_SUCCESS;
-}
-
-static void nvme_init_cq(NvmeCQueue *cq, NvmeCtrl *n, uint64_t dma_addr,
-    uint16_t cqid, uint16_t vector, uint16_t size, uint16_t irq_enabled)
-{
-    cq->ctrl = n;
-    cq->cqid = cqid;
-    cq->size = size;
-    cq->dma_addr = dma_addr;
-    cq->phase = 1;
-    cq->irq_enabled = irq_enabled;
-    cq->vector = vector;
-    cq->head = cq->tail = 0;
-    msix_vector_unuse(&n->parent_obj, cq->vector);
-    if (msix_vector_use(&n->parent_obj, cq->vector) < 0) {
-        error_report("nvme_init_cq: init cq vector failed");
-    }
-    n->cq[cqid] = cq;
-}
-
-static uint16_t nvme_create_cq(NvmeCtrl *n, NvmeCmd *cmd)
-{
-    int ret;
-    NvmeCQueue *cq;
-    NvmeCqe cqe;
-    NvmeCreateCq *c = (NvmeCreateCq *)cmd;
-    uint16_t cqid = le16_to_cpu(c->cqid);
-    uint16_t vector = le16_to_cpu(c->irq_vector);
-    uint16_t qsize = le16_to_cpu(c->qsize);
-    uint16_t qflags = le16_to_cpu(c->cq_flags);
-    uint64_t prp1 = le64_to_cpu(c->prp1);
-
-    if (!cqid || nvme_check_cqid(n, cqid)) {
-        error_report("nvme_create_cq: invalid cqid");
-        return NVME_INVALID_CQID | NVME_DNR;
-    }
-    if (!qsize || qsize > NVME_CAP_MQES(n->bar.cap)) {
-        error_report("nvme_create_cq: invalid qsize, qsize %u", qsize);
-        return NVME_MAX_QSIZE_EXCEEDED | NVME_DNR;
-    }
-    if (!prp1) {
-        error_report("nvme_create_cq: invalid prp1");
-        return NVME_INVALID_FIELD | NVME_DNR;
-    }
-    if (vector > n->num_io_queues + 1) {
-        error_report("nvme_create_cq: invalid irq vector");
-        return NVME_INVALID_IRQ_VECTOR | NVME_DNR;
-    }
-    if (!(NVME_CQ_FLAGS_PC(qflags))) {
-        error_report("nvme_create_cq: invalid flags");
-        return NVME_INVALID_FIELD | NVME_DNR;
-    }
-
-    /* BIOS also create IO queue pair for same queue ID */
-    if (n->cq[cqid] != NULL) {
-        nvme_free_cq(n->cq[cqid], n);
-    }
-
-    cq = g_malloc0(sizeof(*cq));
-    assert(cq != NULL);
-    nvme_init_cq(cq, n, prp1, cqid, vector, qsize + 1,
-                 NVME_CQ_FLAGS_IEN(qflags));
-    ret = vhost_user_nvme_admin_cmd_raw(&n->dev, cmd, &cqe, sizeof(cqe));
-    if (ret < 0) {
-        error_report("nvme_create_cq: create cq failed");
-        return -1;
-    }
-
-    if (cq->irq_enabled) {
-        ret = vhost_user_nvme_add_kvm_msi_virq(n, cq);
-        if (ret < 0) {
-            error_report("vhost-user-nvme: add kvm msix virq failed");
-            return -1;
-        }
-        ret = vhost_dev_nvme_set_guest_notifier(&n->dev,
-                                                &cq->guest_notifier,
-                                                cq->cqid);
-        if (ret < 0) {
-            error_report("vhost-user-nvme: set guest notifier failed");
-            return -1;
-        }
-    }
-
-    if (cq->irq_enabled && !n->vector_poll_started) {
-        n->vector_poll_started = true;
-        if (msix_set_vector_notifiers(&n->parent_obj,
-                                      vhost_user_nvme_vector_unmask,
-                                      vhost_user_nvme_vector_mask,
-                                      vhost_user_nvme_vector_poll)) {
-            error_report("vhost-user-nvme: msix_set_vector_notifiers failed");
-            return -1;
-        }
-    }
-
-    return NVME_SUCCESS;
-}
 
 static uint16_t nvme_identify_ctrl(NvmeCtrl *n, NvmeIdentify *c)
 {
@@ -484,57 +197,6 @@ static uint16_t nvme_identify(NvmeCtrl *n, NvmeCmd *cmd)
     }
 }
 
-static uint16_t nvme_get_feature(NvmeCtrl *n, NvmeCmd *cmd, NvmeCqe *cqe)
-{
-    uint32_t dw10 = le32_to_cpu(cmd->cdw10);
-    int ret;
-
-    switch (dw10 & 0xff) {
-    case NVME_VOLATILE_WRITE_CACHE:
-        cqe->result = 0;
-        break;
-    case NVME_NUMBER_OF_QUEUES:
-        ret = vhost_user_nvme_admin_cmd_raw(&n->dev, cmd, cqe, sizeof(*cqe));
-        if (ret < 0) {
-            return NVME_INVALID_FIELD | NVME_DNR;
-        }
-        /* 0 based value for number of IO queues */
-        if (n->num_io_queues > (cqe->result & 0xffffu) + 1) {
-            info_report("Adjust number of IO queues from %u to %u",
-                    n->num_io_queues, (cqe->result & 0xffffu) + 1);
-                    n->num_io_queues = (cqe->result & 0xffffu) + 1;
-        }
-        break;
-    default:
-        return NVME_INVALID_FIELD | NVME_DNR;
-    }
-
-    return NVME_SUCCESS;
-}
-
-static uint16_t nvme_set_feature(NvmeCtrl *n, NvmeCmd *cmd, NvmeCqe *cqe)
-{
-    uint32_t dw10 = le32_to_cpu(cmd->cdw10);
-    int ret;
-
-    switch (dw10 & 0xff) {
-    case NVME_NUMBER_OF_QUEUES:
-        ret = vhost_user_nvme_admin_cmd_raw(&n->dev, cmd, cqe, sizeof(*cqe));
-        if (ret < 0) {
-            return NVME_INVALID_FIELD | NVME_DNR;
-        }
-        /* 0 based value for number of IO queues */
-        if (n->num_io_queues > (cqe->result & 0xffffu) + 1) {
-            info_report("Adjust number of IO queues from %u to %u",
-                    n->num_io_queues, (cqe->result & 0xffffu) + 1);
-                    n->num_io_queues = (cqe->result & 0xffffu) + 1;
-        }
-        break;
-    default:
-        return NVME_INVALID_FIELD | NVME_DNR;
-    }
-    return NVME_SUCCESS;
-}
 
 static void nvme_clear_guest_notifier(NvmeCtrl *n)
 {
@@ -558,47 +220,10 @@ static void nvme_clear_guest_notifier(NvmeCtrl *n)
     }
 }
 
-static uint16_t nvme_doorbell_buffer_config(NvmeCtrl *n, NvmeCmd *cmd)
-{
-    int ret;
-    NvmeCmd cqe;
 
-    ret = vhost_user_nvme_admin_cmd_raw(&n->dev, cmd, &cqe, sizeof(cqe));
-    if (ret < 0) {
-        error_report("nvme_doorbell_buffer_config: set failed");
-        return NVME_INVALID_FIELD | NVME_DNR;
-    }
-
-    n->dataplane_started = true;
-
-    return NVME_SUCCESS;
-}
-
-static uint16_t nvme_abort_cmd(NvmeCtrl *n, NvmeCmd *cmd)
-{
-    int ret;
-    NvmeCmd cqe;
-
-    ret = vhost_user_nvme_admin_cmd_raw(&n->dev, cmd, &cqe, sizeof(cqe));
-    if (ret < 0) {
-        error_report("nvme_abort_cmd: set failed");
-        return NVME_INVALID_FIELD | NVME_DNR;
-    }
-
-    return NVME_SUCCESS;
-}
 
 static const char *nvme_admin_str[256] = {
     [NVME_ADM_CMD_IDENTIFY] = "NVME_ADM_CMD_IDENTIFY",
-    [NVME_ADM_CMD_CREATE_CQ] = "NVME_ADM_CMD_CREATE_CQ",
-    [NVME_ADM_CMD_GET_LOG_PAGE] = "NVME_ADM_CMD_GET_LOG_PAGE",
-    [NVME_ADM_CMD_CREATE_SQ] = "NVME_ADM_CMD_CREATE_SQ",
-    [NVME_ADM_CMD_DELETE_CQ] = "NVME_ADM_CMD_DELETE_CQ",
-    [NVME_ADM_CMD_DELETE_SQ] = "NVME_ADM_CMD_DELETE_SQ",
-    [NVME_ADM_CMD_SET_FEATURES] = "NVME_ADM_CMD_SET_FEATURES",
-    [NVME_ADM_CMD_GET_FEATURES] = "NVME_ADM_CMD_SET_FEATURES",
-    [NVME_ADM_CMD_ABORT] = "NVME_ADM_CMD_ABORT",
-    [NVME_ADM_CMD_SET_DB_MEMORY] = "NVME_ADM_CMD_SET_DB_MEMORY",
 };
 
 static uint16_t nvme_admin_cmd(NvmeCtrl *n, NvmeCmd *cmd, NvmeCqe *cqe)
@@ -607,65 +232,40 @@ static uint16_t nvme_admin_cmd(NvmeCtrl *n, NvmeCmd *cmd, NvmeCqe *cqe)
             nvme_admin_str[cmd->opcode] : "Unsupported ADMIN Command");
 
     switch (cmd->opcode) {
-    case NVME_ADM_CMD_DELETE_SQ:
-        return nvme_del_sq(n, cmd);
-    case NVME_ADM_CMD_CREATE_SQ:
-        return nvme_create_sq(n, cmd);
-    case NVME_ADM_CMD_DELETE_CQ:
-        return nvme_del_cq(n, cmd);
-    case NVME_ADM_CMD_CREATE_CQ:
-        return nvme_create_cq(n, cmd);
     case NVME_ADM_CMD_IDENTIFY:
         return nvme_identify(n, cmd);
-    case NVME_ADM_CMD_SET_FEATURES:
-        return nvme_set_feature(n, cmd, cqe);
-    case NVME_ADM_CMD_GET_FEATURES:
-        return nvme_get_feature(n, cmd, cqe);
-    case NVME_ADM_CMD_SET_DB_MEMORY:
-        return nvme_doorbell_buffer_config(n, cmd);
-    case NVME_ADM_CMD_ABORT:
-        return nvme_abort_cmd(n, cmd);
     default:
         return NVME_INVALID_OPCODE | NVME_DNR;
     }
 }
 
-static int nvme_start_ctrl(NvmeCtrl *n)
+static int vhost_nvme_set_endpoint(NvmeCtrl *n)
 {
-    uint32_t page_bits = NVME_CC_MPS(n->bar.cc) + 12;
-    uint32_t page_size = 1 << page_bits;
+    const VhostOps *vhost_ops = n->dev.vhost_ops;
+    struct vhost_nvme_target backend;
 
     info_report("QEMU Start NVMe Controller ...");
     if (vhost_dev_nvme_start(&n->dev, NULL) < 0) {
-        error_report("nvme_start_ctrl: vhost device start failed");
+        error_report("vhost_nvme_set_endpoint: vhost device start failed");
         return -1;
     }
 
-    if (!n->bar.asq || !n->bar.acq ||
-            n->bar.asq & (page_size - 1) || n->bar.acq & (page_size - 1) ||
-            NVME_CC_MPS(n->bar.cc) < NVME_CAP_MPSMIN(n->bar.cap) ||
-            NVME_CC_MPS(n->bar.cc) > NVME_CAP_MPSMAX(n->bar.cap) ||
-            !NVME_AQA_ASQS(n->bar.aqa) || !NVME_AQA_ACQS(n->bar.aqa)) {
-        error_report("nvme_start_ctrl: invalid bar configurations");
-        return -1;
+    //NVME not have wwpn, but have serial number. See nvme_props for more info
+    memset(&backend, 0, sizeof(backend));
+    pstrcpy(backend.vhost_wwpn, sizeof(backend.vhost_wwpn), n->params.serial);
+    ret = vhost_ops->vhost_nvme_set_endpoint(&n->dev, &backend);
+    if (ret < 0) {
+        return -errno;
     }
-
-    n->page_bits = page_bits;
-    n->page_size = page_size;
-    n->max_prp_ents = n->page_size / sizeof(uint64_t);
-    n->cqe_size = 1 << NVME_CC_IOCQES(n->bar.cc);
-    n->sqe_size = 1 << NVME_CC_IOSQES(n->bar.cc);
-    nvme_init_cq(&n->admin_cq, n, n->bar.acq, 0, 0,
-        NVME_AQA_ACQS(n->bar.aqa) + 1, 1);
-    nvme_init_sq(&n->admin_sq, n, n->bar.asq, 0, 0,
-        NVME_AQA_ASQS(n->bar.aqa) + 1);
 
     return 0;
 }
 
-static int nvme_clear_ctrl(NvmeCtrl *n, bool shutdown)
+static int vhost_nvme_clear_endpoint(NvmeCtrl *n, bool shutdown)
 {
-    int i;
+    const VhostOps *vhost_ops = n->dev.vhost_ops;
+    struct vhost_nvme_target backend;
+    int ret;
 
     if (shutdown) {
         info_report("QEMU Shutdown NVMe Controller ...");
@@ -674,7 +274,7 @@ static int nvme_clear_ctrl(NvmeCtrl *n, bool shutdown)
     }
 
     if (vhost_dev_nvme_stop(&n->dev) < 0) {
-        error_report("nvme_clear_ctrl: vhost device stop failed");
+        error_report("vhost_nvme_clear_endpoint: vhost device stop failed");
         return -1;
     }
 
@@ -682,14 +282,11 @@ static int nvme_clear_ctrl(NvmeCtrl *n, bool shutdown)
         nvme_clear_guest_notifier(n);
     }
 
-    for (i = 0; i <= n->num_io_queues; i++) {
-        if (n->sq[i] != NULL) {
-            nvme_free_sq(n->sq[i], n);
-        }
-
-        if (n->cq[i] != NULL) {
-            nvme_free_cq(n->cq[i], n);
-        }
+    memset(&backend, 0, sizeof(backend));
+    pstrcpy(backend.vhost_wwpn, sizeof(backend.vhost_wwpn), n->params.serial);
+    ret = vhost_ops->vhost_nvme_clear_endpoint(&n->dev, &backend);
+    if (ret < 0) {
+        return -errno;
     }
 
     n->bar.cc = 0;
@@ -700,61 +297,20 @@ static int nvme_clear_ctrl(NvmeCtrl *n, bool shutdown)
 static void nvme_write_bar(NvmeCtrl *n, hwaddr offset, uint64_t data,
                            unsigned size)
 {
-    switch (offset) {
-    case 0xc:
-        n->bar.intms |= data & 0xffffffff;
-        n->bar.intmc = n->bar.intms;
-        break;
-    case 0x10:
-        n->bar.intms &= ~(data & 0xffffffff);
-        n->bar.intmc = n->bar.intms;
-        break;
-    case 0x14:
-        /* Windows first sends data, then sends enable bit */
-        if (!NVME_CC_EN(data) && !NVME_CC_EN(n->bar.cc) &&
-            !NVME_CC_SHN(data) && !NVME_CC_SHN(n->bar.cc))
-        {
-            n->bar.cc = data;
-        }
+    const VhostOps *vhost_ops = n->dev.vhost_ops;
+    struct nvmet_vhost_bar nvmet_bar;
+    int ret;
 
-        if (NVME_CC_EN(data) && !NVME_CC_EN(n->bar.cc)) {
-            n->bar.cc = data;
-            if (nvme_start_ctrl(n)) {
-                n->bar.csts = NVME_CSTS_FAILED;
-            } else {
-                n->bar.csts = NVME_CSTS_READY;
-            }
-        } else if (!NVME_CC_EN(data) && NVME_CC_EN(n->bar.cc)) {
-            nvme_clear_ctrl(n, false);
-            n->bar.csts &= ~NVME_CSTS_READY;
-        }
-        if (NVME_CC_SHN(data) && !(NVME_CC_SHN(n->bar.cc))) {
-                nvme_clear_ctrl(n, true);
-                n->bar.cc = data;
-                n->bar.csts |= NVME_CSTS_SHST_COMPLETE;
-        } else if (!NVME_CC_SHN(data) && NVME_CC_SHN(n->bar.cc)) {
-                n->bar.csts &= ~NVME_CSTS_SHST_COMPLETE;
-                n->bar.cc = data;
-        }
-        break;
-    case 0x24:
-        n->bar.aqa = data & 0xffffffff;
-        break;
-    case 0x28:
-        n->bar.asq = data;
-        break;
-    case 0x2c:
-        n->bar.asq |= data << 32;
-        break;
-    case 0x30:
-        n->bar.acq = data;
-        break;
-    case 0x34:
-        n->bar.acq |= data << 32;
-        break;
-    default:
-        break;
+    memset(&nvmet_bar, 0, sizeof(nvmet_bar));
+    nvmet_bar.type = VHOST_NVME_BAR_WRITE;
+    nvmet_bar.offset = offset;
+    nvmet_bar.size = size;
+    nvmet_bar.val = data;
+    ret = vhost_ops->vhost_nvme_bar(&n->dev, &nvmet_bar);
+    if (ret < 0) {
+        error_report("nvme_write_bar error = %d", ret);
     }
+
 }
 
 static uint64_t nvme_mmio_read(void *opaque, hwaddr addr, unsigned size)
@@ -762,6 +318,9 @@ static uint64_t nvme_mmio_read(void *opaque, hwaddr addr, unsigned size)
     NvmeCtrl *n = (NvmeCtrl *)opaque;
     uint8_t *ptr = (uint8_t *)&n->bar;
     uint64_t val = 0;
+    const VhostOps *vhost_ops = n->dev.vhost_ops;
+    struct nvmet_vhost_bar nvmet_bar;
+    int ret;
 
     if (unlikely(addr & (sizeof(uint32_t) - 1))) {
         error_report("MMIO read not 32-bit aligned, offset=0x%"PRIx64"", addr);
@@ -771,98 +330,16 @@ static uint64_t nvme_mmio_read(void *opaque, hwaddr addr, unsigned size)
                      " offset=0x%"PRIx64"", addr);
         // should RAZ, fall through for now
     }
-
-    if (addr < sizeof(n->bar)) {
-        memcpy(&val, ptr + addr, size);
-    } else {
-        error_report("MMIO read beyond last register,"
-                   " offset=0x%"PRIx64", returning 0", addr);
+    memset(&nvmet_bar, 0, sizeof(nvmet_bar));
+    nvmet_bar.type = VHOST_NVME_BAR_READ;
+    nvmet_bar.offset = addr;
+    nvmet_bar.size = size;
+    val = vhost_ops->vhost_nvme_bar(&n->dev, &nvmet_bar);
+    if (ret < 0) {
+        error_report("nvme_write_bar error = %d", ret);
     }
+
     return val;
-}
-
-static void nvme_process_admin_cmd(NvmeSQueue *sq)
-{
-    NvmeCtrl *n = sq->ctrl;
-    NvmeCQueue *cq = n->cq[sq->cqid];
-    uint16_t status;
-    hwaddr addr;
-    NvmeCmd cmd;
-    NvmeCqe cqe;
-
-    while (!(nvme_sq_empty(sq))) {
-        addr = sq->dma_addr + sq->head * n->sqe_size;
-        pci_dma_read(&n->parent_obj, addr, (void *)&cmd, sizeof(cmd));
-        nvme_inc_sq_head(sq);
-
-        memset(&cqe, 0, sizeof(cqe));
-
-        status = nvme_admin_cmd(n, &cmd, &cqe);
-        cqe.cid = cmd.cid;
-        cqe.status = cpu_to_le16(status << 1 | cq->phase);
-        cqe.sq_id = cpu_to_le16(sq->sqid);
-        cqe.sq_head = cpu_to_le16(sq->head);
-        addr = cq->dma_addr + cq->tail * n->cqe_size;
-        nvme_inc_cq_tail(cq);
-        pci_dma_write(&n->parent_obj, addr, &cqe, sizeof(cqe));
-        nvme_isr_notify(n, cq);
-    }
-}
-
-static void nvme_process_admin_db(NvmeCtrl *n, hwaddr addr, int val)
-{
-    if (((addr - 0x1000) >> 2) & 1) {
-        uint16_t new_head = val & 0xffff;
-        NvmeCQueue *cq;
-        cq = n->cq[0];
-        if (new_head >= cq->size) {
-            return;
-        }
-
-        cq->head = new_head;
-
-        if (cq->tail != cq->head) {
-            nvme_isr_notify(n, cq);
-        }
-    } else {
-        uint16_t new_tail = val & 0xffff;
-        NvmeSQueue *sq;
-        sq = n->sq[0];
-        if (new_tail >= sq->size) {
-            return;
-        }
-
-        sq->tail = new_tail;
-        nvme_process_admin_cmd(sq);
-    }
-}
-
-static void
-nvme_process_io_db(NvmeCtrl *n, hwaddr addr, int val)
-{
-    uint16_t cq_head, sq_tail;
-    uint32_t qid;
-
-    /* Do nothing after the doorbell buffer config command */
-    if (n->dataplane_started) {
-        return;
-    }
-
-    if (((addr - 0x1000) >> 2) & 1) {
-        qid = (addr - (0x1000 + (1 << 2))) >> 3;
-        cq_head = val & 0xffff;
-        if (n->barmem) {
-            n->shadow_db[qid * 2 + 1] = cq_head;
-        }
-    } else {
-        qid = (addr - 0x1000) >> 3;
-        sq_tail = val & 0xffff;
-        if (n->barmem) {
-            n->shadow_db[qid * 2] = sq_tail;
-        }
-    }
-
-    return;
 }
 
 static void nvme_mmio_write(void *opaque, hwaddr addr, uint64_t data,
@@ -871,10 +348,6 @@ static void nvme_mmio_write(void *opaque, hwaddr addr, uint64_t data,
     NvmeCtrl *n = (NvmeCtrl *)opaque;
     if (addr < sizeof(n->bar)) {
         nvme_write_bar(n, addr, data, size);
-    } else if (addr >= 0x1000 && addr < 0x1008) {
-        nvme_process_admin_db(n, addr, data);
-    } else {
-        nvme_process_io_db(n, addr, data);
     }
 }
 
@@ -895,6 +368,16 @@ static void nvme_cleanup(NvmeCtrl *n)
     g_free(n->namespaces);
 }
 
+static void nvme_check_constraints(NvmeCtrl *n, Error **errp)
+{
+    NvmeParams *params = &n->params;
+
+    if (!params->serial) {
+        error_setg(errp, "serial property not set");
+        return;
+    }
+}
+
 static void nvme_realize(PCIDevice *pci_dev, Error **errp)
 {
     NvmeCtrl *n = NVME_VHOST(pci_dev);
@@ -905,9 +388,16 @@ static void nvme_realize(PCIDevice *pci_dev, Error **errp)
     int vhostfd = -1;
     uint8_t *pci_conf;
     uint64_t bar_cap;
+    Error *local_err = NULL;
 
-    if (vs->conf.vhostfd) {
-        vhostfd = monitor_fd_param(monitor_cur(), vs->conf.vhostfd, errp);
+    nvme_check_constraints(n, &local_err);
+    if (local_err) {
+        error_propagate(errp, local_err);
+        return;
+    }
+
+    if (n->params.vhostfd) {
+        vhostfd = monitor_fd_param(monitor_cur(), n->params.vhostfd, errp);
         if (vhostfd == -1) {
             error_prepend(errp, "vhost-scsi: unable to parse vhostfd: ");
             return;
@@ -950,43 +440,9 @@ static void nvme_realize(PCIDevice *pci_dev, Error **errp)
         &n->iomem);
     msix_init_exclusive_bar(&n->parent_obj, n->num_io_queues, 4, NULL);
 
-    /* Create shadow BAR0 for NVMe controller */
-    if (n->barmem) {
-        n->shadow_mr = host_memory_backend_get_memory(n->barmem);
-        ret = vhost_user_nvme_set_bar_mr(&n->dev, n->shadow_mr);
-        if (ret < 0) {
-            error_report("vhost-user-nvme: set shadow BAR0 MR failed");
-            return;
-        }
-        n->shadow_db = (volatile uint32_t *)((uintptr_t)
-                       memory_region_get_ram_ptr(n->shadow_mr) + 0x1000ull);
-        info_report("Emulated Controller BAR0 0x%"PRIx64"",
-                   (uintptr_t)n->shadow_db);
-    }
-
-    /* Get PCI capabilities via socket */
-    n->bar.cap = 0;
-    ret = vhost_user_nvme_get_cap(&n->dev, &bar_cap);
+    ret = vhost_nvme_set_endpoint(n);
     if (ret < 0) {
-        error_setg(errp, "vhost-user-nvme: get controller capabilities failed");
-        return;
-    }
-    n->bar.cap = bar_cap;
-    info_report("Emulated Controller Capabilities 0x%"PRIx64"", n->bar.cap);
-
-    /* TODO: Don't support Controller Memory Buffer and AER now */
-    n->bar.vs = 0x00010000;
-    n->bar.intmc = n->bar.intms = 0;
-
-    /* Get Identify Controller/NS from slave
-     * target and cache the data in QEMU.
-     */
-    cmd.opcode = NVME_ADM_CMD_IDENTIFY;
-    cmd.cns = 0x1;
-    ret = vhost_user_nvme_admin_cmd_raw(&n->dev, (NvmeCmd *)&cmd,
-                                        id, sizeof(*id));
-    if (ret < 0) {
-        error_setg(errp, "vhost-user-nvme: get identify controller failed");
+        error_setg(errp, "vhost-nvme: set endpoint ioctl failed");
         return;
     }
 
@@ -999,21 +455,6 @@ static void nvme_realize(PCIDevice *pci_dev, Error **errp)
             return;
         }
     }
-
-    for (i = 1; i <= id->nn; i++) {
-        cmd.opcode = NVME_ADM_CMD_IDENTIFY;
-        cmd.cns = 0x0;
-        cmd.nsid = i;
-        // with &n->namespace or &n->namespaces ??? maybe need fix
-        ret = vhost_user_nvme_admin_cmd_raw(&n->dev, (NvmeCmd *)&cmd,
-                                            &n->namespaces[i - 1],
-                                            sizeof(NvmeNamespace));
-        if (ret < 0) {
-            error_setg(errp, "vhost-user-nvme: get ns %d failed", i);
-            goto err;
-        }
-    }
-
     return;
 
 err:
@@ -1024,11 +465,14 @@ static void nvme_exit(PCIDevice *pci_dev)
 {
     NvmeCtrl *n = NVME_VHOST(pci_dev);
 
+    vhost_nvme_clear_endpoint(n, 1);
     nvme_cleanup(n);
     msix_uninit_exclusive_bar(pci_dev);
 }
 
-static Property nvme_props[] = {
+static Property nvme_props[] = {//char *vhostfd;
+    DEFINE_PROP_STRING("vhostfd", NvmeCtrl, params.vhostfd),
+    DEFINE_PROP_STRING("serial", NvmeCtrl, params.serial),
     DEFINE_PROP_UINT32("num_io_queues", NvmeCtrl, num_io_queues, 1),
     DEFINE_PROP_LINK("barmem", NvmeCtrl, barmem, TYPE_MEMORY_BACKEND, HostMemoryBackend *),
     DEFINE_PROP_CHR("chardev", NvmeCtrl, chardev),
@@ -1068,7 +512,7 @@ static void nvme_instance_init(Object *obj)
 }
 
 static const TypeInfo nvme_info = {
-    .name          = "vhost-user-nvme",
+    .name          = "vhost-kernel-nvme",
     .parent        = TYPE_PCI_DEVICE,
     .instance_size = sizeof(NvmeCtrl),
     .class_init    = nvme_class_init,

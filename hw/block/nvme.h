@@ -13,6 +13,7 @@
 
 typedef struct NvmeParams {
     char     *serial;
+    char     *vhostfd;
     uint32_t num_queues; /* deprecated since 5.1 */
     uint32_t max_ioqpairs;
     uint16_t msix_qsize;
@@ -126,7 +127,7 @@ typedef struct NvmeBus {
 #define NVME(obj) \
         OBJECT_CHECK(NvmeCtrl, (obj), TYPE_NVME)
 
-#define TYPE_VHOST_NVME "vhost-user-nvme"
+#define TYPE_VHOST_NVME "vhost-nvme"
 #define NVME_VHOST(obj) \
         OBJECT_CHECK(NvmeCtrl, (obj), TYPE_VHOST_NVME)
 

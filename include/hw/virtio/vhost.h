@@ -61,7 +61,7 @@ typedef struct VhostDevConfigOps {
 } VhostDevConfigOps;
 
 struct vhost_memory;
-struct vhost_dev {
+struct vhost_dev { 
     VirtIODevice *vdev;
     MemoryListener memory_listener;
     MemoryListener iommu_listener;

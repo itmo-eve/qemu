@@ -1833,7 +1833,7 @@ int vhost_dev_nvme_init(struct vhost_dev *hdev, void *opaque,
     hdev->vdev = NULL;
     hdev->migration_blocker = NULL;
 
-    r = vhost_dev_nvme_set_backend_type(hdev, backend_type);
+    r = vhost_set_backend_type(hdev, backend_type);
     assert(r >= 0);
 
     r = hdev->vhost_ops->vhost_backend_init(hdev, opaque);

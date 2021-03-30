@@ -31,16 +31,8 @@ typedef struct VhostUserState {
 bool vhost_user_init(VhostUserState *user, CharBackend *chr, Error **errp);
 void vhost_user_cleanup(VhostUserState *user);
 
-/* vhost user nvme */
-int vhost_dev_nvme_set_backend_type(struct vhost_dev *dev,
-                                    VhostBackendType backend_type);
-int vhost_dev_nvme_start(struct vhost_dev *hdev, VirtIODevice *vdev);
-int vhost_dev_nvme_stop(struct vhost_dev *hdev);
-
 int vhost_user_nvme_admin_cmd_raw(struct vhost_dev *dev, NvmeCmd *cmd,
                                   void *buf, uint32_t len);
-int vhost_user_nvme_get_cap(struct vhost_dev *dev, uint64_t *cap);
-int vhost_user_nvme_set_bar_mr(struct vhost_dev *dev, MemoryRegion *mr);
 
 
 #endif
