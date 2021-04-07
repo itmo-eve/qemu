@@ -27,7 +27,6 @@
 
 #include "hw/block/block.h"
 #include "include/block/nvme.h"
-#include "hw/virtio/vhost_user_nvme.h"
 
 #include <sys/ioctl.h>
 #include <sys/socket.h>
