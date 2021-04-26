@@ -717,17 +717,16 @@ static void nvme_cleanup(NvmeCtrl *n)
     g_free(n->namespaces);
 }
 
-static uint16_t nvme_identify(n, cmd);
-    case NVME_ADM_CMD_SET_FEATURES:
-        return nvme_set_feature(n, cmd, cqe);
-    case NVME_ADM_CMD_GET_FEATURES:
-        return nvme_get_feature(n, cmd, cqe);
-    case NVME_ADM_CMD_SET_DB_MEMORY:
-        return nvme_doorbell_buffer_config(n, cmd);
-    case NVME_ADM_CMD_ABORT:
-        return nvme_abort_cmd(n, cmd);
+static uint16_t nvme_identify(NvmeCtrl *n, NvmeCmd *cmd)
+{
+    NvmeIdentify *c = (NvmeIdentify *)cmd;
+    switch (le32_to_cpu(c->cns)) {
+    case 0x00:
+        return nvme_identify_ns(n, c);
+    case 0x01:
+        return nvme_identify_ctrl(n, c);
     default:
-        return NVME_INVALID_OPCODE | NVME_DNR;
+        return NVME_INVALID_FIELD | NVME_DNR;
     }
 }
 
@@ -740,6 +739,7 @@ static uint16_t nvme_admin_cmd(NvmeCtrl *n, NvmeCmd *cmd, NvmeCqe *cqe)
     switch (cmd->opcode) {
     case NVME_ADM_CMD_IDENTIFY:
         return nvme_identify(n, cmd);
+    return 0;
 }
 
 static void nvme_process_admin_cmd(NvmeSQueue *sq)
@@ -922,12 +922,11 @@ static void nvme_exit(PCIDevice *pci_dev)
     msix_uninit_exclusive_bar(pci_dev);
 }
 
-static Property nvme_props[] = {//char *vhostfd;
+static Property nvme_props[] = {
     DEFINE_PROP_STRING("vhostfd", NvmeCtrl, params.vhostfd),
     DEFINE_PROP_STRING("serial", NvmeCtrl, params.serial),
     DEFINE_PROP_UINT32("num_io_queues", NvmeCtrl, num_io_queues, 1),
     DEFINE_PROP_LINK("barmem", NvmeCtrl, barmem, TYPE_MEMORY_BACKEND, HostMemoryBackend *),
-    DEFINE_PROP_CHR("chardev", NvmeCtrl, chardev),
     DEFINE_PROP_END_OF_LIST(),
 };
 

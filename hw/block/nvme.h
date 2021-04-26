@@ -127,7 +127,7 @@ typedef struct NvmeBus {
 #define NVME(obj) \
         OBJECT_CHECK(NvmeCtrl, (obj), TYPE_NVME)
 
-#define TYPE_VHOST_NVME "vhost-nvme"
+#define TYPE_VHOST_NVME "vhost-kernel-nvme"
 #define NVME_VHOST(obj) \
         OBJECT_CHECK(NvmeCtrl, (obj), TYPE_VHOST_NVME)
 

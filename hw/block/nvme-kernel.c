@@ -2911,8 +2911,6 @@ static void nvme_realize(PCIDevice *pci_dev, Error **errp)
         return;
     }
 
-    qbus_create_inplace(&n->bus, sizeof(NvmeBus), TYPE_NVME_BUS,
-                        &pci_dev->qdev, n->parent_obj.qdev.id);
 
     nvme_init_state(n);
     nvme_init_pci(n, pci_dev, &local_err);
@@ -2975,7 +2973,6 @@ static Property nvme_props[] = {
     DEFINE_PROP_UINT8("mdts", NvmeCtrl, params.mdts, 7),
     DEFINE_PROP_BOOL("use-intel-id", NvmeCtrl, params.use_intel_id, false),
     DEFINE_PROP_LINK("barmem", NvmeCtrl, barmem, TYPE_MEMORY_BACKEND, HostMemoryBackend *),
-    DEFINE_PROP_CHR("chardev", NvmeCtrl, chardev),
     DEFINE_PROP_END_OF_LIST(),
 };
 
@@ -3025,18 +3022,9 @@ static const TypeInfo nvme_info = {
     },
 };
 
-
-static const TypeInfo nvme_bus_info = {
-    .name = TYPE_NVME_BUS,
-    .parent = TYPE_BUS,
-    .instance_size = sizeof(NvmeBus),
-};
-
 static void nvme_register_types(void)
 {
     type_register_static(&nvme_info);
-    type_register_static(&nvme_bus_info);
 }
-
 
 type_init(nvme_register_types)
