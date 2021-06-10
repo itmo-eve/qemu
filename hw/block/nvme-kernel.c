@@ -327,7 +327,6 @@ static int vhost_nvme_clear_endpoint(NvmeCtrl *n, bool shutdown)
     if (ret < 0) {
         return -errno;
     }
-
     n->bar.cc = 0;
     n->dataplane_started = false;
     return 0;
@@ -2324,7 +2323,7 @@ static void nvme_clear_ctrl(NvmeCtrl *n)
     n->bar.cc = 0;
 }
 
-/* static int nvme_start_ctrl(NvmeCtrl *n)
+static int nvme_start_ctrl(NvmeCtrl *n)
 {
     uint32_t page_bits = NVME_CC_MPS(n->bar.cc) + 12;
     uint32_t page_size = 1 << page_bits;
@@ -2423,7 +2422,7 @@ static void nvme_clear_ctrl(NvmeCtrl *n)
     QTAILQ_INIT(&n->aer_queue);
 
     return 0;
-} */
+}
 
 static void nvme_write_bar(NvmeCtrl *n, hwaddr offset, uint64_t data,
                            unsigned size)
@@ -2431,6 +2430,94 @@ static void nvme_write_bar(NvmeCtrl *n, hwaddr offset, uint64_t data,
     const VhostOps *vhost_ops = n->dev.vhost_ops;
     struct nvmet_vhost_bar nvmet_bar;
     int ret;
+
+    switch (offset) {
+    case 0xc:   /* INTMS */
+        if (unlikely(msix_enabled(&(n->parent_obj)))) {
+            NVME_GUEST_ERR(pci_nvme_ub_mmiowr_intmask_with_msix,
+                           "undefined access to interrupt mask set"
+                           " when MSI-X is enabled");
+            /* should be ignored, fall through for now */
+        }
+        n->bar.intms |= data & 0xffffffff;
+        n->bar.intmc = n->bar.intms;
+        trace_pci_nvme_mmio_intm_set(data & 0xffffffff, n->bar.intmc);
+        nvme_irq_check(n);
+        break;
+    case 0x10:  /* INTMC */
+        if (unlikely(msix_enabled(&(n->parent_obj)))) {
+            NVME_GUEST_ERR(pci_nvme_ub_mmiowr_intmask_with_msix,
+                           "undefined access to interrupt mask clr"
+                           " when MSI-X is enabled");
+            /* should be ignored, fall through for now */
+        }
+        n->bar.intms &= ~(data & 0xffffffff);
+        n->bar.intmc = n->bar.intms;
+        trace_pci_nvme_mmio_intm_clr(data & 0xffffffff, n->bar.intmc);
+        nvme_irq_check(n);
+        break;
+    case 0x14:  /* CC */
+        trace_pci_nvme_mmio_cfg(data & 0xffffffff);
+        /* Windows first sends data, then sends enable bit */
+        if (!NVME_CC_EN(data) && !NVME_CC_EN(n->bar.cc) &&
+            !NVME_CC_SHN(data) && !NVME_CC_SHN(n->bar.cc))
+        {
+            n->bar.cc = data;
+        }
+
+        if (NVME_CC_EN(data) && !NVME_CC_EN(n->bar.cc)) {
+            n->bar.cc = data;
+            if (unlikely(nvme_start_ctrl(n))) {
+                trace_pci_nvme_err_startfail();
+                n->bar.csts = NVME_CSTS_FAILED;
+            } else {
+                trace_pci_nvme_mmio_start_success();
+                n->bar.csts = NVME_CSTS_READY;
+            }
+        } else if (!NVME_CC_EN(data) && NVME_CC_EN(n->bar.cc)) {
+            trace_pci_nvme_mmio_stopped();
+            nvme_clear_ctrl(n);
+            n->bar.csts &= ~NVME_CSTS_READY;
+        }
+
+        if (NVME_CC_SHN(data) && !(NVME_CC_SHN(n->bar.cc))) {
+            trace_pci_nvme_mmio_shutdown_set();
+            nvme_clear_ctrl(n);
+            n->bar.cc = data;
+            n->bar.csts |= NVME_CSTS_SHST_COMPLETE;
+        } else if (!NVME_CC_SHN(data) && NVME_CC_SHN(n->bar.cc)) {
+            trace_pci_nvme_mmio_shutdown_cleared();
+            n->bar.csts &= ~NVME_CSTS_SHST_COMPLETE;
+            n->bar.cc = data;
+        }
+        break;
+    case 0x24:  /* AQA */
+        n->bar.aqa = data & 0xffffffff;
+        trace_pci_nvme_mmio_aqattr(data & 0xffffffff);
+        break;
+    case 0x28:  /* ASQ */
+        n->bar.asq = data;
+        trace_pci_nvme_mmio_asqaddr(data);
+        break;
+    case 0x2c:  /* ASQ hi */
+        n->bar.asq |= data << 32;
+        trace_pci_nvme_mmio_asqaddr_hi(data, n->bar.asq);
+        break;
+    case 0x30:  /* ACQ */
+        trace_pci_nvme_mmio_acqaddr(data);
+        n->bar.acq = data;
+        break;
+    case 0x34:  /* ACQ hi */
+        n->bar.acq |= data << 32;
+        trace_pci_nvme_mmio_acqaddr_hi(data, n->bar.acq);
+        break;
+    default:
+        NVME_GUEST_ERR(pci_nvme_ub_mmiowr_invalid,
+                       "invalid MMIO write,"
+                       " offset=0x%"PRIx64", data=%"PRIx64"",
+                       offset, data);
+        break;
+    }
 
     memset(&nvmet_bar, 0, sizeof(nvmet_bar));
     nvmet_bar.type = VHOST_NVME_BAR_WRITE;
