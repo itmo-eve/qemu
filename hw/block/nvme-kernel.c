@@ -222,7 +222,7 @@ static int vhost_nvme_set_endpoint(NvmeCtrl *n)
     int ret;
 
     info_report("QEMU Start NVMe Controller ...");
-    if (vhost_dev_nvme_start(&n->dev, NULL) < 0) {
+    if (vhost_dev_nvme_start(&n->dev, n->vdev) < 0) {
         error_report("vhost_nvme_set_endpoint: vhost device start failed");
         return -1;
     }
@@ -918,6 +918,8 @@ static void nvme_instance_init(Object *obj)
                                       "bootindex", "/namespace@1,0",
                                       DEVICE(obj));
     }
+    virtio_instance_init_common(obj, &s->vdev, sizeof(s->vdev),
+                                TYPE_VHOST_NVME);
 }
 
 static const TypeInfo nvme_info = {

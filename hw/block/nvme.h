@@ -4,6 +4,7 @@
 #include "block/nvme.h"
 #include "nvme-ns.h"
 #include "hw/virtio/vhost.h"
+#include "hw/virtio/virtio-scsi.h"
 #include "sysemu/hostmem.h"
 #include "chardev/char-fe.h"
 #include "hw/pci/pci.h"
@@ -176,6 +177,7 @@ typedef struct NvmeCtrl {
 
     int32_t      bootindex;
     struct vhost_dev dev;
+    VirtIOSCSI   vdev;
     uint32_t     num_io_queues;
     bool         dataplane_started;
     bool         vector_poll_started;
