@@ -182,16 +182,8 @@ static int vhost_dev_nvme_start(struct vhost_dev *hdev, VirtIODevice *vdev)
     }
     info_report("vhost_dev_set_features done \n start vhost_set_mem_table");
 
-    ret = hdev->vhost_ops->vhost_set_mem_table(hdev, hdev->mem);
-    if (ret < 0) {
-        error_report("SET MEMTABLE Failed");
-        return ret;
-    }
-    info_report("vhost_set_mem_table done");
-
     if (vdev == NULL) {
         error_report("vdev is null");
-        return -1;
     }
 
     info_report("vhost_dev_start");
@@ -199,9 +191,11 @@ static int vhost_dev_nvme_start(struct vhost_dev *hdev, VirtIODevice *vdev)
     if (hdev->vhost_ops->vhost_dev_start) {
         ret = hdev->vhost_ops->vhost_dev_start(hdev, true);
         if (ret) {
-        return ret;
+            info_report("vhost_dev_end with err %d", ret);
+            return ret;
         }
     }
+    info_report("vhost_dev_end");
 
     return 0;
 }
@@ -232,6 +226,7 @@ static int vhost_nvme_set_endpoint(NvmeCtrl *n)
         return -1;
     }
 
+    info_report("vhost_nvme_set_endpoint start");
     //NVME not have wwpn, but have serial number. See nvme_props for more info
     memset(&backend, 0, sizeof(backend));
     pstrcpy(backend.vhost_wwpn, sizeof(backend.vhost_wwpn), n->params.serial);
