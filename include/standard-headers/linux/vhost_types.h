@@ -133,7 +133,8 @@ struct vhost_scsi_target {
 /* VHOST_VDPA specific definitions */
 
 struct vhost_nvme_target {
- 	char vhost_wwpn[224]; /* TRANSPORT_IQN_LEN */
+	char subsys_nqn[128];
+	char host_nqn[128];
 };
 struct nvmet_vhost_eventfd {
  	int num;

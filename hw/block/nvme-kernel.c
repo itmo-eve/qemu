@@ -182,10 +182,6 @@ static int vhost_dev_nvme_start(struct vhost_dev *hdev, VirtIODevice *vdev)
     }
     info_report("vhost_dev_set_features done \n start vhost_set_mem_table");
 
-    if (vdev == NULL) {
-        error_report("vdev is null");
-    }
-
     info_report("vhost_dev_start");
     //vhost_user_set_u64(dev, VHOST_USER_NVME_START_STOP, 1);
     if (hdev->vhost_ops->vhost_dev_start) {
@@ -229,7 +225,8 @@ static int vhost_nvme_set_endpoint(NvmeCtrl *n)
     info_report("vhost_nvme_set_endpoint start");
     //NVME not have wwpn, but have serial number. See nvme_props for more info
     memset(&backend, 0, sizeof(backend));
-    pstrcpy(backend.vhost_wwpn, sizeof(backend.vhost_wwpn), n->params.serial);
+    pstrcpy(backend.subsys_nqn, sizeof(backend.subsys_nqn), n->params.subsys_nqn);
+    pstrcpy(backend.host_nqn, sizeof(backend.host_nqn), n->params.host_nqn);
     ret = vhost_ops->vhost_nvme_set_endpoint(&n->dev, &backend);
     if (ret < 0) {
         return -errno;
@@ -260,7 +257,8 @@ static int vhost_nvme_clear_endpoint(NvmeCtrl *n, bool shutdown)
     }
 
     memset(&backend, 0, sizeof(backend));
-    pstrcpy(backend.vhost_wwpn, sizeof(backend.vhost_wwpn), n->params.serial);
+    pstrcpy(backend.subsys_nqn, sizeof(backend.subsys_nqn), n->params.subsys_nqn);
+    pstrcpy(backend.host_nqn, sizeof(backend.host_nqn), n->params.host_nqn);
     ret = vhost_ops->vhost_nvme_clear_endpoint(&n->dev, &backend);
     if (ret < 0) {
         return -errno;
@@ -872,6 +870,8 @@ static void nvme_exit(PCIDevice *pci_dev)
 
 static Property nvme_props[] = {
     DEFINE_PROP_STRING("vhostfd", NvmeCtrl, params.vhostfd),
+    DEFINE_PROP_STRING("subsys_nqn", NvmeCtrl, params.subsys_nqn),
+    DEFINE_PROP_STRING("host_nqn", NvmeCtrl, params.host_nqn),
     DEFINE_BLOCK_PROPERTIES(NvmeCtrl, namespace.blkconf),
     DEFINE_PROP_LINK("pmrdev", NvmeCtrl, pmrdev, TYPE_MEMORY_BACKEND,
                      HostMemoryBackend *),

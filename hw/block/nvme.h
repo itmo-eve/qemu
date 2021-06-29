@@ -53,6 +53,8 @@ static const uint32_t nvme_feature_cap[NVME_FID_MAX] = {
 typedef struct NvmeParams {
     char     *serial;
     char     *vhostfd;
+    char     *subsys_nqn;
+    char     *host_nqn;
     uint32_t num_queues; /* deprecated since 5.1 */
     uint32_t max_ioqpairs;
     uint16_t msix_qsize;
