@@ -52,7 +52,7 @@ static int vhost_dev_has_iommu(struct vhost_dev *dev)
            virtio_host_has_feature(vdev, VIRTIO_F_IOMMU_PLATFORM);
 }
 
-static int vhost_kernel_nvme_add_kvm_msi_virq(NvmeCtrl *n, NvmeCQueue *cq)
+/*static int vhost_kernel_nvme_add_kvm_msi_virq(NvmeCtrl *n, NvmeCQueue *cq)
 {
     int virq;
     int vector_n;
@@ -133,7 +133,7 @@ static void vhost_nvme_vector_mask(PCIDevice *dev, unsigned vector)
     }
     return;
 }
-
+*/
 static int vhost_dev_set_features(struct vhost_dev *dev,
                                   bool enable_log)
 {
@@ -250,9 +250,9 @@ static int vhost_nvme_clear_endpoint(NvmeCtrl *n, bool shutdown)
         return -1;
     }
 
-    if (shutdown) {
+/*     if (shutdown) {
         nvme_clear_guest_notifier(n);
-    }
+    } */
 
     memset(&backend, 0, sizeof(backend));
     pstrcpy(backend.subsys_nqn, sizeof(backend.subsys_nqn), n->params.subsys_nqn);
@@ -266,7 +266,7 @@ static int vhost_nvme_clear_endpoint(NvmeCtrl *n, bool shutdown)
     n->dataplane_started = false;
     return 0;
 }
-
+/*
 static int vhost_nvme_vector_unmask(PCIDevice *dev, unsigned vector,
                                           MSIMessage msg)
 {
@@ -346,7 +346,7 @@ static int nvme_set_eventfd(NvmeCtrl *n, EventNotifier *notifier, uint16_t cqid,
 
     return 0;
 }
-
+*/
 static void nvme_init_sq(NvmeSQueue *sq, NvmeCtrl *n, uint64_t dma_addr,
                          uint16_t sqid, uint16_t cqid, uint16_t size)
 {
@@ -479,7 +479,7 @@ static uint16_t nvme_create_cq(NvmeCtrl *n, NvmeRequest *req)
     cq = g_malloc0(sizeof(*cq));
     nvme_init_cq(cq, n, prp1, cqid, vector, qsize + 1,
                  NVME_CQ_FLAGS_IEN(qflags));
-
+    /*
     if (cq->irq_enabled) {
         ret = vhost_kernel_nvme_add_kvm_msi_virq(n, cq);
         if (ret < 0) {
@@ -505,7 +505,7 @@ static uint16_t nvme_create_cq(NvmeCtrl *n, NvmeRequest *req)
         }
     }
     nvme_set_eventfd(n, &cq->guest_notifier, cq->cqid, &cq->vector, &cq->irq_enabled);
-
+    */
     /*
      * It is only required to set qs_created when creating a completion queue;
      * creating a submission queue without a matching completion queue will
@@ -688,9 +688,9 @@ static int nvme_start_ctrl(NvmeCtrl *n)  //kernel side?!
 static void nvme_write_bar(NvmeCtrl *n, hwaddr offset, uint64_t data,
                            unsigned size)
 {
-    const VhostOps *vhost_ops = n->dev.vhost_ops;
+    /*    const VhostOps *vhost_ops = n->dev.vhost_ops;
     struct nvmet_vhost_bar nvmet_bar;
-    int ret;
+    int ret; */
     // -------------------------------
     switch (offset) {
         case 0xc:   /* INTMS */
@@ -827,7 +827,7 @@ static void nvme_write_bar(NvmeCtrl *n, hwaddr offset, uint64_t data,
             break;
     }
     // -------------------------------
-    memset(&nvmet_bar, 0, sizeof(nvmet_bar));
+/*     memset(&nvmet_bar, 0, sizeof(nvmet_bar));
     nvmet_bar.type = VHOST_NVME_BAR_WRITE;
     nvmet_bar.offset = offset;
     nvmet_bar.size = size;
@@ -835,7 +835,7 @@ static void nvme_write_bar(NvmeCtrl *n, hwaddr offset, uint64_t data,
     ret = vhost_ops->vhost_nvme_bar(&n->dev, &nvmet_bar);
     if (ret < 0) {
         error_report("nvme_write_bar error = %d", ret);
-    }
+    } */
 
 }
 
@@ -844,8 +844,8 @@ static uint64_t nvme_mmio_read(void *opaque, hwaddr addr, unsigned size)
     NvmeCtrl *n = (NvmeCtrl *)opaque;
     uint8_t *ptr = (uint8_t *)&n->bar;
     uint64_t val = 0;
-    const VhostOps *vhost_ops = n->dev.vhost_ops;
-    struct nvmet_vhost_bar nvmet_bar;
+    //const VhostOps *vhost_ops = n->dev.vhost_ops;
+    //struct nvmet_vhost_bar nvmet_bar;
 
     if (unlikely(addr & (sizeof(uint32_t) - 1))) {
         error_report("MMIO read not 32-bit aligned, offset=0x%"PRIx64"", addr);
@@ -855,11 +855,11 @@ static uint64_t nvme_mmio_read(void *opaque, hwaddr addr, unsigned size)
                      " offset=0x%"PRIx64"", addr);
         // should RAZ, fall through for now
     }
-    memset(&nvmet_bar, 0, sizeof(nvmet_bar));
+/*     memset(&nvmet_bar, 0, sizeof(nvmet_bar));
     nvmet_bar.type = VHOST_NVME_BAR_READ;
     nvmet_bar.offset = addr;
     nvmet_bar.size = size;
-    val = vhost_ops->vhost_nvme_bar(&n->dev, &nvmet_bar);
+    val = vhost_ops->vhost_nvme_bar(&n->dev, &nvmet_bar); */
     // val will be rewrite next (for tests)
 
     if (addr < sizeof(n->bar)) {
@@ -889,8 +889,9 @@ static void nvme_mmio_write(void *opaque, hwaddr addr, uint64_t data,
 
     trace_pci_nvme_mmio_write(addr, data);
 
-    nvme_write_bar(n, addr, data, size);
-    if (addr > sizeof(n->bar)) {
+    if (addr < sizeof(n->bar)) {
+        nvme_write_bar(n, addr, data, size);
+    } else {
         nvme_process_db(n, addr, data);
     }
 }
