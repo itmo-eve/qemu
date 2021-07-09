@@ -588,6 +588,8 @@ static int nvme_start_ctrl(NvmeCtrl *n)  //kernel side?!
 {
     uint32_t page_bits = NVME_CC_MPS(n->bar.cc) + 12;
     uint32_t page_size = 1 << page_bits;
+    const VhostOps *vhost_ops = n->dev.vhost_ops;
+    int ret = 0;
 
     if (unlikely(n->cq[0])) {
         trace_pci_nvme_err_startfail_cq();
@@ -682,15 +684,21 @@ static int nvme_start_ctrl(NvmeCtrl *n)  //kernel side?!
 
     QTAILQ_INIT(&n->aer_queue);
 
+    ret = vhost_ops->vhost_nvme_start_ctrl(&n->dev);
+    if (ret < 0) {
+        error_report("vhost_nvme_start_ctrl error = %d", ret);
+        // return ret;
+    }
+
     return 0;
 }
 
 static void nvme_write_bar(NvmeCtrl *n, hwaddr offset, uint64_t data,
                            unsigned size)
 {
-    /*    const VhostOps *vhost_ops = n->dev.vhost_ops;
+    const VhostOps *vhost_ops = n->dev.vhost_ops;
     struct nvmet_vhost_bar nvmet_bar;
-    int ret; */
+    int ret;
     // -------------------------------
     switch (offset) {
         case 0xc:   /* INTMS */
@@ -827,7 +835,7 @@ static void nvme_write_bar(NvmeCtrl *n, hwaddr offset, uint64_t data,
             break;
     }
     // -------------------------------
-/*     memset(&nvmet_bar, 0, sizeof(nvmet_bar));
+    memset(&nvmet_bar, 0, sizeof(nvmet_bar));
     nvmet_bar.type = VHOST_NVME_BAR_WRITE;
     nvmet_bar.offset = offset;
     nvmet_bar.size = size;
@@ -835,7 +843,7 @@ static void nvme_write_bar(NvmeCtrl *n, hwaddr offset, uint64_t data,
     ret = vhost_ops->vhost_nvme_bar(&n->dev, &nvmet_bar);
     if (ret < 0) {
         error_report("nvme_write_bar error = %d", ret);
-    } */
+    }
 
 }
 
@@ -844,6 +852,7 @@ static uint64_t nvme_mmio_read(void *opaque, hwaddr addr, unsigned size)
     NvmeCtrl *n = (NvmeCtrl *)opaque;
     uint8_t *ptr = (uint8_t *)&n->bar;
     uint64_t val = 0;
+    int ret = 0;
     //const VhostOps *vhost_ops = n->dev.vhost_ops;
     //struct nvmet_vhost_bar nvmet_bar;
 
@@ -855,11 +864,14 @@ static uint64_t nvme_mmio_read(void *opaque, hwaddr addr, unsigned size)
                      " offset=0x%"PRIx64"", addr);
         // should RAZ, fall through for now
     }
-/*     memset(&nvmet_bar, 0, sizeof(nvmet_bar));
+    memset(&nvmet_bar, 0, sizeof(nvmet_bar));
     nvmet_bar.type = VHOST_NVME_BAR_READ;
     nvmet_bar.offset = addr;
     nvmet_bar.size = size;
-    val = vhost_ops->vhost_nvme_bar(&n->dev, &nvmet_bar); */
+    ret = vhost_ops->vhost_nvme_bar(&n->dev, &nvmet_bar);
+    if (ret) {
+         error_report("Failed to read bar at offset 0x%" PRIx64, addr);
+    }
     // val will be rewrite next (for tests)
 
     if (addr < sizeof(n->bar)) {
@@ -879,7 +891,7 @@ static uint64_t nvme_mmio_read(void *opaque, hwaddr addr, unsigned size)
                        " offset=0x%"PRIx64", returning 0", addr);
     }
 
-    return val; // ret
+    return nvmet_bar.val; // ret
 }
 
 static void nvme_mmio_write(void *opaque, hwaddr addr, uint64_t data,

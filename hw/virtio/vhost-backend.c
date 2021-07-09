@@ -85,6 +85,11 @@ static int vhost_kernel_nvme_set_endpoint(struct vhost_dev *dev,
     return vhost_kernel_call(dev, VHOST_NVME_SET_ENDPOINT, target);
 }
 
+static int vhost_kernel_nvme_start_ctrl(struct vhost_dev *dev)
+{
+    return vhost_kernel_call(dev, VHOST_NVME_START_CRTL, NULL);
+}
+
 static int vhost_kernel_nvme_clear_endpoint(struct vhost_dev *dev,
                                           struct vhost_nvme_target *target)
 {
@@ -340,6 +345,7 @@ static const VhostOps kernel_ops = {
         .vhost_set_owner = vhost_kernel_set_owner,
         .vhost_reset_device = vhost_kernel_reset_device,
         .vhost_get_vq_index = vhost_kernel_get_vq_index,
+        .vhost_nvme_start_ctrl = vhost_kernel_nvme_start_ctrl,
         .vhost_nvme_set_endpoint = vhost_kernel_nvme_set_endpoint,
         .vhost_nvme_clear_endpoint = vhost_kernel_nvme_clear_endpoint,
         .vhost_nvme_set_eventfd = vhost_kernel_nvme_set_eventfd,

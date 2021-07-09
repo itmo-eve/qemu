@@ -46,6 +46,8 @@ typedef int (*vhost_backend_memslots_limit)(struct vhost_dev *dev);
 
 typedef int (*vhost_nvme_set_endpoint_op)(struct vhost_dev *dev,
                                            struct vhost_nvme_target *target);
+
+typedef int (*vhost_nvme_start_ctrl_op)(struct vhost_dev *dev);
 typedef int (*vhost_nvme_clear_endpoint_op)(struct vhost_dev *dev,
                                            struct vhost_nvme_target *target);
 typedef int (*vhost_nvme_set_eventfd_op) (struct vhost_dev *dev,
@@ -141,6 +143,7 @@ typedef struct VhostOps {
     vhost_backend_cleanup vhost_backend_cleanup;
     vhost_backend_memslots_limit vhost_backend_memslots_limit;
     vhost_net_set_backend_op vhost_net_set_backend;
+    vhost_nvme_start_ctrl_op vhost_nvme_start_ctrl;
     vhost_nvme_set_endpoint_op vhost_nvme_set_endpoint;
     vhost_nvme_clear_endpoint_op vhost_nvme_clear_endpoint;
     vhost_nvme_set_eventfd_op vhost_nvme_set_eventfd;
